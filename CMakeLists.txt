@@ -105,6 +105,140 @@ set_target_properties(gr4-timesource-blocks PROPERTIES EXPORT_NAME blocks LIBRAR
 target_link_libraries(gr4-timesource-blocks PUBLIC gnuradio4::gnuradio-core gnuradio4::gnuradio-blocklib-core
                                                    timesource-headers)
 
+# ---- the cases ---------------------------------------------------------------------------
+#
+# One binary per subject under test/ and one ctest entry per case, each named on the
+# binary's command line. The offline cases carry the label offline and open no device. The
+# hardware cases read a GPS receiver and carry the label hardware; GR4TIMESOURCE_GPS_DEVICE and
+# GR4TIMESOURCE_GPS_BAUD in the environment name its serial port and rate. Boost.UT is one
+# header, boost/ut.hpp. find_path() looks for it under include/ of every CMAKE_PREFIX_PATH entry
+# and the system's include directories; GR4TIMESOURCE_UT_INCLUDE_DIR names its directory instead.
+option(GR4TIMESOURCE_ENABLE_TESTING "Build the cases" ${PROJECT_IS_TOP_LEVEL})
+option(GR4TIMESOURCE_ENABLE_HARDWARE_TESTS "Build the cases that read a GPS receiver (label hardware)" OFF)
+
+set(GR4TIMESOURCE_TESTS FALSE)
+if(GR4TIMESOURCE_ENABLE_TESTING)
+  find_path(GR4TIMESOURCE_UT_INCLUDE_DIR boost/ut.hpp DOC "Directory holding boost/ut.hpp")
+  if(GR4TIMESOURCE_UT_INCLUDE_DIR)
+    message(STATUS "gr4-timesource: Boost.UT FOUND in ${GR4TIMESOURCE_UT_INCLUDE_DIR}")
+    set(GR4TIMESOURCE_TESTS TRUE)
+    enable_testing()
+  else()
+    message(STATUS "gr4-timesource: the cases are SKIPPED: no boost/ut.hpp under CMAKE_PREFIX_PATH; "
+                   "set GR4TIMESOURCE_UT_INCLUDE_DIR to its directory")
+  endif()
+endif()
+
+if(GR4TIMESOURCE_TESTS)
+  add_library(timesource-ut INTERFACE)
+  target_include_directories(timesource-ut SYSTEM INTERFACE ${GR4TIMESOURCE_UT_INCLUDE_DIR})
+  target_include_directories(timesource-ut INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/test)
+
+  # timesource_test(<binary> CASES <ctest name>... [LABEL <label>] [TIMEOUT <s>] [LIBS ...])
+  #
+  # Builds test/<binary>.cpp and registers one ctest entry per case. A case name that matches
+  # nothing in the binary fails the entry (test/support/Cases.hpp).
+  function(timesource_test name)
+    cmake_parse_arguments(T "" "LABEL;TIMEOUT" "CASES;LIBS" ${ARGN})
+    if(NOT T_LABEL)
+      set(T_LABEL offline)
+    endif()
+    if(NOT T_TIMEOUT)
+      set(T_TIMEOUT 15)
+    endif()
+    add_executable(${name} test/${name}.cpp)
+    target_link_libraries(${name} PRIVATE timesource-headers timesource-ut ${T_LIBS})
+    target_compile_options(${name} PRIVATE ${GR4TIMESOURCE_WARNINGS})
+    foreach(case ${T_CASES})
+      add_test(NAME ${case} COMMAND ${name} ${case})
+      set_tests_properties(${case} PROPERTIES TIMEOUT ${T_TIMEOUT} LABELS ${T_LABEL})
+    endforeach()
+  endfunction()
+
+  # test/support/FakeSerialPort.cpp defines the libserialport functions SerialPort calls, over
+  # ports a case registers. A binary that links these objects uses those definitions in place of
+  # the shared library's: the GPS block lists the registered ports and reads the sentences its
+  # cases write, and no device is listed or opened.
+  add_library(timesource-fake-serialport OBJECT test/support/FakeSerialPort.cpp)
+  target_link_libraries(timesource-fake-serialport PRIVATE timesource-headers timesource-ut)
+  target_compile_options(timesource-fake-serialport PRIVATE ${GR4TIMESOURCE_WARNINGS})
+
+  timesource_test(
+    qa_SerialPort
+    CASES serial.ranks-a-receiver-above-a-bridge
+          serial.rates-by-name
+          serial.a-product-string-names-a-receiver
+          serial.describes-a-usb-port
+          serial.names-the-ports-it-saw
+          serial.detection-passes-over-a-silent-port
+          serial.refuses-a-path-that-does-not-exist
+          serial.refuses-a-file-that-is-no-serial-port)
+
+  timesource_test(
+    qa_GpsSource
+    CASES gps.emits-a-tag-on-each-new-second
+          gps.marks-a-second-without-a-fix-unlocked
+          gps.meta-info-off-leaves-the-fix-out
+          gps.clock-mode-writes-sample-rate-samples-per-second
+          gps.context-goes-on-the-tag
+          gps.enumerations-are-set-by-name
+          gps.reads-at-4800-baud-8n1-by-default
+          gps.refuses-a-start-on-a-path-that-does-not-exist
+          gps.detection-passes-over-a-silent-port
+    LIBS gnuradio4::gnuradio-core gnuradio4::gnuradio-blocklib-core timesource-fake-serialport)
+
+  timesource_test(
+    qa_PpsSource
+    CASES pps.ntp-emits-one-tag-per-second
+          pps.ptp-without-a-device-is-unavailable
+          pps.hardware-pps-without-a-device-is-unavailable
+          pps.discipline-units
+          pps.ptp-locks-to-a-disciplined-system-clock
+          pps.a-ptp-clock-on-tai-takes-the-kernel-offset-or-the-fallback
+          pps.ptp-offset-reads-both-clocks
+          pps.a-ptp-block-tags-the-utc-second
+          pps.a-clock-step-keeps-the-seconds-in-order
+          pps.a-fetch-error-is-paced-and-reported-once
+          pps.auto-is-the-system-clock
+          pps.names-modes-and-leap-states
+          pps.a-pulse-marks-its-nearest-second
+          pps.time-to-the-next-second
+          pps.samples-per-second-follow-the-mode
+    LIBS gnuradio4::gnuradio-core gnuradio4::gnuradio-blocklib-core)
+
+  timesource_test(
+    qa_NmeaParser
+    CASES nmea.checksum-of-a-known-sentence
+          nmea.rmc-fields
+          nmea.gga-fields
+          nmea.zda-fields
+          nmea.gsa-fields
+          nmea.vtg-fields
+          nmea.a-new-second-closes-the-record
+          nmea.a-second-carries-the-date-across-a-midnight
+          nmea.a-leap-second-is-23-59-59-plus-one-second
+          nmea.any-talker-prefix
+          nmea.a-bad-checksum-changes-nothing
+          nmea.a-truncated-sentence-changes-nothing
+          nmea.an-empty-field-keeps-the-default
+          nmea.a-sentence-without-time-opens-no-second
+          nmea.other-text-is-ignored
+          nmea.checked-counts-checked-sentences-of-the-read-kinds)
+
+  # The GPS receiver case reads a real receiver for up to thirty seconds. It is off by default,
+  # carries the label hardware, and reads the port GR4TIMESOURCE_GPS_DEVICE names at the rate
+  # GR4TIMESOURCE_GPS_BAUD names, 4800 where unset. It opens the port for reading only.
+  if(GR4TIMESOURCE_ENABLE_HARDWARE_TESTS)
+    timesource_test(
+      hw_GpsSource
+      CASES hw.gps-a-receiver-tags-a-second
+      LABEL hardware
+      TIMEOUT 60
+      LIBS gnuradio4::gnuradio-core gnuradio4::gnuradio-blocklib-core)
+    message(STATUS "gr4-timesource: the GPS receiver case is ENABLED (label hardware)")
+  endif()
+endif()
+
 # ---- install -----------------------------------------------------------------------------
 install(
   TARGETS gr4-timesource-blocks

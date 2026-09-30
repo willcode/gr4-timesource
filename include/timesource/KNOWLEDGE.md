@@ -7,7 +7,8 @@ UTC second. `timesource::PpsSource` does the same for the seconds of a kernel cl
 assert edge of a PPS device. Both write `uint8` zeros; the tags carry the information. The
 settings and tag keys are those of the timing blocks the GNU Radio 4 blocks tree carried, so a
 graph moves over by its block names. `timesource::DiscontinuityMonitor` counts the gaps a
-stream's tags report and keeps a sample-to-time clock.
+stream's tags report and keeps a sample-to-time clock. `timesource::PpsCorrelator` measures a
+stream's sample-clock error in ppm from the interval between reference edges.
 
 **algorithm**
 `NmeaParser` keeps one open record per UTC second. GGA, RMC and ZDA carry a time and open
@@ -65,10 +66,24 @@ with `withRate()` at the tag's index; a restated rate changes nothing. A positiv
 `nominal_rate` refuses a rate more than `rate_tolerance` of it away, and every rate that is not
 positive and finite. A refusal is counted and kept for `lastRefusedRate()`.
 
+`PpsCorrelator` finds edges in one of two ways. `threshold` takes each sample's magnitude, arms
+below `threshold`, and places an edge at the first armed sample at or above it, at
+`(k - 1) + (threshold - m[k-1]) / (m[k] - m[k-1])`; a stream that starts high starts disarmed.
+`trigger_tag` takes each tag with a `uint64` `trigger_time`, once by a tag cursor, whose
+`trigger_name` starts with `trigger_filter` where that is set, at its index plus
+`trigger_offset * sample_rate`. Each edge after the first closes an interval of `N_k` samples
+with error `(N_k / (sample_rate * pps_interval) - 1) * 1e6`. An error within `tolerance_ppm`
+enters a ring of `n_intervals`, summed in index order; a long interval outside it counts
+`max(2, round(N_k / nominal)) - 1` missed edges, and a short one an extra edge. Each closed
+interval makes one record, held until the `records` port has room and dropped where the port is
+unconnected.
+
 **io**
 In: a serial port by path, or the best-ranked port libserialport lists; a kernel clock or
 `/dev/ptpN` or `/dev/ppsN`. Out: `out`, `uint8`, one tag per second. `device_name` shows the
 port in use. `DiscontinuityMonitor`: `in` and `out`, `float`, `complex<float>` or `uint8`.
+`PpsCorrelator`: `in` of the same types, and the optional `records` of `DataSet<float>`, one
+scalar record per interval with `sample_start` the whole sample the interval opened on.
 
 **guarantees**
 The GPS port is opened read-only and nothing is written to it. A `device_path` that does not
@@ -80,14 +95,18 @@ unchanged and, as a `gr::UnfilteredTagPropagation` block, every key of every tag
 It publishes its counts through one `MeasurementSlot` after each call that changes them;
 `account()` reads them all from one update, and the dropped total rides the slot's integer
 field. `clock()`, `hasClock()` and `lastRefusedRate()` are owning-thread state. A
-`nominal_rate` off the microhertz grid's range throws when the settings are applied.
-`GR4TIMESOURCE_TIMING_BLOCKS` decides each measurement block apart. `DiscontinuityMonitor`
-needs `algorithm/timing/SampleClock.hpp` of `gnuradio4Library`, which the willcode fork adds,
-and the core's `gr::UnfilteredTagPropagation`. AUTO builds the block where both are found, with
-its registration header `DiscontinuityMonitorBlocks.hpp` and its cases, and otherwise prints a
-line naming the block and the missing piece. ON fails the configure where the block lacks a
-piece, and OFF leaves it out. A failed check reruns at the next configure, and a passed one
-stays cached. The sources build either way.
+`nominal_rate` off the microhertz grid's range throws when the settings are applied. `PpsCorrelator`
+publishes its mean, its last error and its four counts through one `MeasurementSlot` after
+each edge, the interval count in the integer field; each reader returns one update. Its figure
+is the same for every chunking of the stream. A setting it cannot meet throws when the settings are applied.
+`GR4TIMESOURCE_TIMING_BLOCKS` decides each measurement block apart. `PpsCorrelator` needs
+`MeasurementRecord.hpp` and `MeasurementSlot.hpp` of `gnuradio4Library`, which upstream main
+carries. `DiscontinuityMonitor` needs `algorithm/timing/SampleClock.hpp` of `gnuradio4Library`,
+which the willcode fork adds, and the core's `gr::UnfilteredTagPropagation`. AUTO builds each
+block whose pieces are found, with its registration header (`<Block>Blocks.hpp`) and its cases,
+and prints a line naming each block left out and the missing piece. ON fails the configure where
+a block lacks a piece, and OFF builds neither. A failed check reruns at the next configure, and
+a passed one stays cached. The sources build either way.
 
 **invariants**
 Each block holds its `IoThread` as its last member, so the io thread ends before the port, the
@@ -111,7 +130,9 @@ HwPps seconds are the system clock's at the pulse and follow its steps. NMEA 018
 bit/s, and `baud_rate` defaults to `Baud4800`, the zero value of `BaudRate`. A USB serial bridge
 runs at the rate the host sets; the receiver behind it decides which rate delivers sentences.
 The microhertz grid holds a 1 ppm trim exactly: 44100 Hz trimmed by 1 ppm is
-44100044100/1000000.
+44100044100/1000000. A `PpsSource` stream in `ppsOnly` mode has one sample per second, and a
+correlator reading it takes `sample_rate` 1. A `float` rate above 16.8 MS/s rounds by up to
+0.06 ppm; `sample_rate` of the correlator is a `double`.
 
 **rejected**
 A serial layer of our own over sysfs, termios and the registry: libserialport covers opening,

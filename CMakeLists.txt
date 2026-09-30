@@ -67,18 +67,20 @@ int main() {
 ]]
   GR4TIMESOURCE_HAVE_TIMEX_TAI)
 
-# DiscontinuityMonitor needs gnuradio-4.0/algorithm/timing/SampleClock.hpp from gnuradio4Library
-# and gr::UnfilteredTagPropagation from the core. Upstream main carries the tag policy, and the
-# willcode fork of the library adds SampleClock.hpp.
+# The two measurement blocks need pieces of the GNU Radio 4 library and core, each block its own.
+# PpsCorrelator needs gnuradio-4.0/algorithm/MeasurementRecord.hpp and MeasurementSlot.hpp from
+# gnuradio4Library. DiscontinuityMonitor needs gnuradio-4.0/algorithm/timing/SampleClock.hpp from
+# gnuradio4Library and gr::UnfilteredTagPropagation from the core. Upstream main carries all of
+# them except SampleClock.hpp, which the willcode fork of the library adds.
 # GR4TIMESOURCE_TIMING_BLOCKS takes AUTO, ON or OFF. AUTO builds each block whose pieces are
 # found and prints one line for each block it leaves out. ON fails the configure where a block
-# lacks a piece. OFF builds no measurement block. Each check is a try_compile against the found targets
+# lacks a piece. OFF builds neither block. Each check is a try_compile against the found targets
 # through check_cxx_source_compiles(): __has_include() for a header, a use of the name for the
 # tag policy. A failed result leaves the cache before its check runs again, and a reconfigure
 # sees a piece the prefix gained since. A passed result stays cached.
 set(GR4TIMESOURCE_TIMING_BLOCKS
     AUTO
-    CACHE STRING "Build the measurement blocks where their pieces are found: AUTO, ON or OFF")
+    CACHE STRING "Build DiscontinuityMonitor and PpsCorrelator where their pieces are found: AUTO, ON or OFF")
 set_property(CACHE GR4TIMESOURCE_TIMING_BLOCKS PROPERTY STRINGS AUTO ON OFF)
 if(NOT GR4TIMESOURCE_TIMING_BLOCKS MATCHES "^(ON|OFF|AUTO)$")
   message(FATAL_ERROR "gr4-timesource: GR4TIMESOURCE_TIMING_BLOCKS is '${GR4TIMESOURCE_TIMING_BLOCKS}'; "
@@ -133,6 +135,11 @@ function(timesource_timing_block block out)
     string(APPEND origins " gnuradio-4.0/algorithm/timing/SampleClock.hpp comes from the willcode fork of the GNU "
                           "Radio 4 library, and upstream main lacks it.")
   endif()
+  if("gnuradio-4.0/algorithm/MeasurementRecord.hpp" IN_LIST missing OR "gnuradio-4.0/algorithm/MeasurementSlot.hpp"
+                                                                       IN_LIST missing)
+    string(APPEND origins " MeasurementRecord.hpp and MeasurementSlot.hpp come from gnuradio4Library, upstream "
+                          "main included.")
+  endif()
   if("gr::UnfilteredTagPropagation" IN_LIST missing)
     string(APPEND origins " gr::UnfilteredTagPropagation comes from the GNU Radio 4 core, upstream main included.")
   endif()
@@ -146,10 +153,13 @@ function(timesource_timing_block block out)
 endfunction()
 
 set(GR4TIMESOURCE_DISCONTINUITY FALSE)
+set(GR4TIMESOURCE_CORRELATOR FALSE)
 if(NOT GR4TIMESOURCE_TIMING_BLOCKS STREQUAL "OFF")
   find_package(gnuradio4Library CONFIG QUIET)
   timesource_timing_block(DiscontinuityMonitor GR4TIMESOURCE_DISCONTINUITY
                           gnuradio-4.0/algorithm/timing/SampleClock.hpp gr::UnfilteredTagPropagation)
+  timesource_timing_block(PpsCorrelator GR4TIMESOURCE_CORRELATOR gnuradio-4.0/algorithm/MeasurementRecord.hpp
+                          gnuradio-4.0/algorithm/MeasurementSlot.hpp)
 endif()
 
 # The headers of the package: the blocks, the NMEA parser, and the serial port and clock layers
@@ -161,7 +171,7 @@ target_include_directories(
                                $<INSTALL_INTERFACE:${GR4TIMESOURCE_INSTALL_INCLUDEDIR}>)
 target_compile_features(timesource-headers INTERFACE cxx_std_23)
 target_link_libraries(timesource-headers INTERFACE PkgConfig::LIBSERIALPORT Threads::Threads)
-if(GR4TIMESOURCE_DISCONTINUITY)
+if(GR4TIMESOURCE_DISCONTINUITY OR GR4TIMESOURCE_CORRELATOR)
   target_link_libraries(timesource-headers INTERFACE gnuradio4::gnuradio-algorithm)
 endif()
 if(GR4TIMESOURCE_HAVE_TIMEPPS)
@@ -176,8 +186,8 @@ add_library(gr4-timesource::headers ALIAS timesource-headers)
 # ---- the block library -------------------------------------------------------------------
 #
 # include/gnuradio-4.0/timesource/TimesourceBlocks.hpp registers each source under its type name.
-# DiscontinuityMonitorBlocks.hpp beside it registers DiscontinuityMonitor, and the build reads it
-# where the block is built. gr_add_block_library()
+# DiscontinuityMonitorBlocks.hpp and PpsCorrelatorBlocks.hpp beside it each register one
+# measurement block, and the build reads each where its block is built. gr_add_block_library()
 # generates the registration units into an object library, and
 # the shared library built from those objects goes to lib/gnuradio-4/plugins, in the build tree
 # and under the install prefix. A program that loads plugins from there creates the blocks by
@@ -186,7 +196,7 @@ add_library(gr4-timesource::headers ALIAS timesource-headers)
 # on purpose.
 set(GR4TIMESOURCE_REGISTERED include/gnuradio-4.0/timesource/TimesourceBlocks.hpp)
 set(GR4TIMESOURCE_UNREGISTERED "")
-foreach(block DISCONTINUITY:DiscontinuityMonitor)
+foreach(block DISCONTINUITY:DiscontinuityMonitor CORRELATOR:PpsCorrelator)
   string(REPLACE ":" ";" pair "${block}")
   list(GET pair 0 flag)
   list(GET pair 1 name)
@@ -313,9 +323,9 @@ if(GR4TIMESOURCE_TESTS)
           pps.samples-per-second-follow-the-mode
     LIBS gnuradio4::gnuradio-core gnuradio4::gnuradio-blocklib-core)
 
-  # The measurement cases drive their block through the test blocks of the GNU Radio 4 blocks
-  # package, found as gnuradio4Blocks.
-  if(GR4TIMESOURCE_DISCONTINUITY)
+  # The measurement cases drive their blocks through the test blocks and the filter blocks of
+  # the GNU Radio 4 blocks package, found as gnuradio4Blocks.
+  if(GR4TIMESOURCE_DISCONTINUITY OR GR4TIMESOURCE_CORRELATOR)
     find_package(gnuradio4Blocks CONFIG QUIET)
   endif()
   if(GR4TIMESOURCE_DISCONTINUITY AND TARGET gnuradio4::gr-testing)
@@ -330,6 +340,21 @@ if(GR4TIMESOURCE_TESTS)
       LIBS gnuradio4::gnuradio-core gnuradio4::gnuradio-blocklib-core gnuradio4::gr-testing)
   elseif(GR4TIMESOURCE_DISCONTINUITY)
     message(STATUS "gr4-timesource: the DiscontinuityMonitor cases are SKIPPED: no gnuradio4Blocks under "
+                   "CMAKE_PREFIX_PATH")
+  endif()
+  if(GR4TIMESOURCE_CORRELATOR AND TARGET gnuradio4::gr-filter)
+    timesource_test(
+      qa_PpsCorrelator
+      CASES correlator.measures-20-ppm-and-zero-after-a-correction
+            correlator.a-deleted-pulse-is-one-missed-edge
+            correlator.the-account-is-independent-of-the-chunking
+            correlator.a-complex-stream-reads-the-same
+            correlator.pps-source-tags-are-an-edge-stream
+            correlator.records-state-their-interval
+            correlator.refuses-settings-that-cannot-be-met
+      LIBS gnuradio4::gnuradio-core gnuradio4::gnuradio-blocklib-core gnuradio4::gr-filter)
+  elseif(GR4TIMESOURCE_CORRELATOR)
+    message(STATUS "gr4-timesource: the PpsCorrelator cases are SKIPPED: no gnuradio4Blocks under "
                    "CMAKE_PREFIX_PATH")
   endif()
 
@@ -388,6 +413,9 @@ set(GR4TIMESOURCE_HEADER_EXCLUDES "")
 if(NOT GR4TIMESOURCE_DISCONTINUITY)
   list(APPEND GR4TIMESOURCE_HEADER_EXCLUDES PATTERN "DiscontinuityMonitor.hpp" EXCLUDE)
 endif()
+if(NOT GR4TIMESOURCE_CORRELATOR)
+  list(APPEND GR4TIMESOURCE_HEADER_EXCLUDES PATTERN "PpsCorrelator.hpp" EXCLUDE)
+endif()
 install(
   DIRECTORY include/timesource
   DESTINATION ${GR4TIMESOURCE_INSTALL_INCLUDEDIR}
@@ -398,7 +426,7 @@ install(
   NAMESPACE gr4-timesource::
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/gr4-timesource)
 set(GR4TIMESOURCE_CONFIG_LIBRARY "")
-if(GR4TIMESOURCE_DISCONTINUITY)
+if(GR4TIMESOURCE_DISCONTINUITY OR GR4TIMESOURCE_CORRELATOR)
   set(GR4TIMESOURCE_CONFIG_LIBRARY "find_dependency(gnuradio4Library CONFIG)")
 endif()
 file(

@@ -12,10 +12,13 @@ Two blocks mark the seconds of a time reference with tags on a stream of
 - `timesource::PpsSource` tags each second of a kernel clock (NTP, PTP, TAI)
   or of a pulse-per-second device, with the kernel's clock discipline.
 
-A measurement block reads the timing of a stream:
+Two measurement blocks read the timing of a stream:
 
 - `timesource::DiscontinuityMonitor` counts the gaps a stream's tags report
   and keeps a sample-to-time clock.
+- `timesource::PpsCorrelator` measures the error of a stream's sample clock
+  in ppm against a pulse per second, from a pulse in the samples or from the
+  tags of `PpsSource`.
 
 The package installs `libgr4-timesource-blocks.so` into the plugin directory
 of GNU Radio 4, where a program that loads plugins finds the blocks by name.
@@ -30,9 +33,10 @@ part of the GNU Radio 4 blocks tree. A graph moves over by its block names:
 | `gr::blocks::timing::GpsSource`    | `timesource::GpsSource`  |
 | `gr::blocks::timing::PpsSource`    | `timesource::PpsSource`  |
 
-`gr::blocks::timing::DiscontinuityMonitor<T>` is
-`timesource::DiscontinuityMonitor<T>` here, with the same settings and
-readers.
+`gr::blocks::timing::DiscontinuityMonitor<T>` and
+`gr::blocks::timing::PpsCorrelator<T>` are `timesource::DiscontinuityMonitor<T>`
+and `timesource::PpsCorrelator<T>` here, with the same settings, readers and
+records.
 
 These behaviors of the two sources differ from the in-tree blocks:
 
@@ -205,6 +209,40 @@ clock keeps its rate. `nDroppedSamples()`, `nEvents()`, `nRateChanges()`,
 `account()` returns every count from one update. `clock()`, `hasClock()` and
 `lastRefusedRate()` belong to the thread that runs the block.
 
+## PpsCorrelator
+
+The block reads `float`, `complex<float>` or `uint8` samples and finds one
+edge per reference pulse. With `N_k` samples between two edges, the error of
+one interval is
+
+```
+rate_error_ppm = (N_k / (sample_rate * pps_interval) - 1) * 1e6
+```
+
+| Setting          | Type   | Default     | Meaning                          |
+| ---------------- | ------ | ----------- | -------------------------------- |
+| `sample_rate`    | double | 1           | rate of the stream read, Hz      |
+| `pps_interval`   | double | 1           | seconds between reference edges  |
+| `edge_source`    | string | `threshold` | `threshold` or `trigger_tag`     |
+| `threshold`      | double | 0.5         | magnitude an edge crosses        |
+| `trigger_filter` | string | empty       | prefix of the counted names      |
+| `tolerance_ppm`  | double | 10000       | largest accepted interval error  |
+| `n_intervals`    | uint32 | 16          | accepted intervals in the mean   |
+
+With `threshold`, an edge is a rise of the sample magnitude through
+`threshold`, placed between two samples by linear interpolation. With
+`trigger_tag`, an edge is a tag with a `trigger_time`, as `PpsSource` writes,
+moved by its `trigger_offset` in seconds. `sample_rate` is
+the rate of the stream the block reads: 1 for `PpsSource` in `ppsOnly` mode.
+
+An interval whose error exceeds `tolerance_ppm` stays out of the mean. A long
+one counts as missed edges and a short one as an extra edge.
+`rateErrorPpm()` is the mean of the last `n_intervals` accepted intervals.
+The optional `records` port carries one `DataSet<float>` per closed interval:
+the channels `rate_error_ppm`, `edge_fraction` and `accepted`, and the
+metadata `interval_index`, `edge_index`, `interval_samples` and
+`n_missed_edges`. Every reader may be called from any thread.
+
 ## Tags
 
 The two sources place one tag on the first sample of each second:
@@ -284,10 +322,12 @@ what else is built:
 
 `GR4TIMESOURCE_TIMING_BLOCKS` takes `AUTO`, the default, `ON` or `OFF`, and
 decides for each measurement block and its cases whether it is built.
-`DiscontinuityMonitor` needs `algorithm/timing/SampleClock.hpp` of
-`gnuradio4Library`, which only the willcode fork carries, and the core's
-`gr::UnfilteredTagPropagation`: `AUTO` builds the block where the configure
-finds both, `ON` fails the configure without them, and `OFF` leaves it out.
+`PpsCorrelator` needs `MeasurementRecord.hpp` and `MeasurementSlot.hpp` of
+`gnuradio4Library`, and `DiscontinuityMonitor` needs its
+`algorithm/timing/SampleClock.hpp`, which only the willcode fork carries, and
+the core's `gr::UnfilteredTagPropagation`: `AUTO` builds each block whose
+pieces the configure finds, `ON` fails the configure where a block lacks
+one, and `OFF` builds neither.
 
 ## Tests
 

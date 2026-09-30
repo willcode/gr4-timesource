@@ -26,15 +26,18 @@ include(CMakePackageConfigHelpers)
 
 set(GR4TIMESOURCE_WARNINGS -Wall -Wextra)
 
-# The platform library the package stands on. libserialport opens, configures, reads and lists
-# serial ports, and states a USB port's vendor, product and strings; pkg-config finds it.
+# GNU Radio 4 core and its block-library macros, and the platform libraries the blocks stand on.
+# libserialport opens, configures, reads and lists serial ports, and states a USB port's vendor,
+# product and strings; pkg-config finds it.
 find_package(Threads REQUIRED)
+find_package(gnuradio4 4.0 CONFIG REQUIRED)
+find_package(GnuRadioBlockLib CONFIG REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBSERIALPORT REQUIRED IMPORTED_TARGET libserialport)
 message(STATUS "gr4-timesource: libserialport ${LIBSERIALPORT_VERSION} FOUND")
 
-# The headers of the package: the NMEA parser and the serial port layer. Installed under
-# include/gr4-timesource/.
+# The headers of the package: the NMEA parser, and the serial port layer the blocks stand on.
+# Installed under include/gr4-timesource/.
 set(GR4TIMESOURCE_INSTALL_INCLUDEDIR ${CMAKE_INSTALL_INCLUDEDIR}/gr4-timesource)
 add_library(timesource-headers INTERFACE)
 target_include_directories(
@@ -45,7 +48,31 @@ target_link_libraries(timesource-headers INTERFACE PkgConfig::LIBSERIALPORT Thre
 set_target_properties(timesource-headers PROPERTIES EXPORT_NAME headers)
 add_library(gr4-timesource::headers ALIAS timesource-headers)
 
+# ---- the block library -------------------------------------------------------------------
+#
+# include/gnuradio-4.0/timesource/TimesourceBlocks.hpp registers each block under its type name.
+# gr_add_block_library() generates the registration units from it into an object library, and
+# the shared library built from those objects goes to lib/gnuradio-4/plugins, in the build tree
+# and under the install prefix. A program that loads plugins from there creates the blocks by
+# name.
+gr_add_block_library(GrTimesourceBlocks HEADERS include/gnuradio-4.0/timesource/TimesourceBlocks.hpp
+                     LINK_LIBRARIES timesource-headers)
+if(NOT TARGET GrTimesourceBlocksObject)
+  message(FATAL_ERROR "gr4-timesource: the block registration was not generated")
+endif()
+target_compile_options(GrTimesourceBlocksObject PRIVATE ${GR4TIMESOURCE_WARNINGS})
+add_library(gr4-timesource-blocks SHARED $<TARGET_OBJECTS:GrTimesourceBlocksObject>)
+add_library(gr4-timesource::blocks ALIAS gr4-timesource-blocks)
+set_target_properties(gr4-timesource-blocks PROPERTIES EXPORT_NAME blocks LIBRARY_OUTPUT_DIRECTORY
+                                                                          ${PROJECT_BINARY_DIR}/lib/gnuradio-4/plugins)
+target_link_libraries(gr4-timesource-blocks PUBLIC gnuradio4::gnuradio-core gnuradio4::gnuradio-blocklib-core
+                                                   timesource-headers)
+
 # ---- install -----------------------------------------------------------------------------
+install(
+  TARGETS gr4-timesource-blocks
+  EXPORT gr4-timesourceTargets
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/gnuradio-4/plugins)
 install(TARGETS timesource-headers EXPORT gr4-timesourceTargets)
 install(
   DIRECTORY include/timesource
@@ -63,6 +90,7 @@ file(
     [[
 include(CMakeFindDependencyMacro)
 find_dependency(Threads)
+find_dependency(gnuradio4 CONFIG)
 find_dependency(PkgConfig)
 pkg_check_modules(LIBSERIALPORT QUIET IMPORTED_TARGET libserialport)
 if(NOT LIBSERIALPORT_FOUND)

@@ -1,0 +1,18 @@
+# Copyright 2026 Jeff Long
+# SPDX-License-Identifier: MIT
+#
+# Text in this package that is not ours to respell. Entries are a path glob
+# (the whole file) or "glob:word" (that word only, in files matching the glob).
+#
+# PpsSource keeps the tag key "synchronised" and the leap state
+# "unsynchronised" of the timing block it replaces, so a graph that reads
+# them keeps working. The cases pin the same strings, and the README lists them.
+README.md:synchronised
+README.md:unsynchronised
+include/timesource/KernelClock.hpp:unsynchronised
+include/timesource/PpsSource.hpp:synchronised
+test/qa_PpsSource.cpp:synchronised
+test/qa_PpsSource.cpp:unsynchronised
+
+# This file is its own word list, so it is exempt from its own gate.
+.us-english-allowlist

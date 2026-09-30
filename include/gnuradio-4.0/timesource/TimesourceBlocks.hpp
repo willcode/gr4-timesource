@@ -11,5 +11,7 @@
 #include <gnuradio-4.0/BlockRegistry.hpp>
 
 #include <timesource/GpsSource.hpp>
+#include <timesource/PpsSource.hpp>
 
 GR_REGISTER_BLOCK(timesource::GpsSource)
+GR_REGISTER_BLOCK(timesource::PpsSource)

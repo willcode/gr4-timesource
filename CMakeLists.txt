@@ -28,7 +28,8 @@ set(GR4TIMESOURCE_WARNINGS -Wall -Wextra)
 
 # GNU Radio 4 core and its block-library macros, and the platform libraries the blocks stand on.
 # libserialport opens, configures, reads and lists serial ports, and states a USB port's vendor,
-# product and strings; pkg-config finds it.
+# product and strings; pkg-config finds it. The kernel clock interfaces are the platform's own
+# headers, checked below.
 find_package(Threads REQUIRED)
 find_package(gnuradio4 4.0 CONFIG REQUIRED)
 find_package(GnuRadioBlockLib CONFIG REQUIRED)
@@ -36,8 +37,38 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBSERIALPORT REQUIRED IMPORTED_TARGET libserialport)
 message(STATUS "gr4-timesource: libserialport ${LIBSERIALPORT_VERSION} FOUND")
 
-# The headers of the package: the NMEA parser, and the serial port layer the blocks stand on.
-# Installed under include/gr4-timesource/.
+# The RFC 2783 PPS interface (Linux with pps-tools, FreeBSD, NetBSD) gives the HwPps clock mode.
+# Without it the mode reports itself unavailable at start. The TAI offset is read from struct
+# timex where the platform's has the field.
+include(CheckCXXSourceCompiles)
+check_cxx_source_compiles(
+  [[
+#include <sys/timepps.h>
+int main() {
+    pps_handle_t handle{};
+    pps_info_t info{};
+    struct timespec wait{};
+    return time_pps_fetch(handle, PPS_TSFMT_TSPEC, &info, &wait);
+}
+]]
+  GR4TIMESOURCE_HAVE_TIMEPPS)
+if(GR4TIMESOURCE_HAVE_TIMEPPS)
+  message(STATUS "gr4-timesource: RFC 2783 sys/timepps.h FOUND; the HwPps clock mode is built")
+else()
+  message(STATUS "gr4-timesource: RFC 2783 sys/timepps.h NOT FOUND; the HwPps clock mode reports itself unavailable")
+endif()
+check_cxx_source_compiles(
+  [[
+#include <sys/timex.h>
+int main() {
+    struct timex tx{};
+    return static_cast<int>(tx.tai);
+}
+]]
+  GR4TIMESOURCE_HAVE_TIMEX_TAI)
+
+# The headers of the package: the NMEA parser, and the serial port and clock layers the blocks
+# stand on. Installed under include/gr4-timesource/.
 set(GR4TIMESOURCE_INSTALL_INCLUDEDIR ${CMAKE_INSTALL_INCLUDEDIR}/gr4-timesource)
 add_library(timesource-headers INTERFACE)
 target_include_directories(
@@ -45,6 +76,12 @@ target_include_directories(
                                $<INSTALL_INTERFACE:${GR4TIMESOURCE_INSTALL_INCLUDEDIR}>)
 target_compile_features(timesource-headers INTERFACE cxx_std_23)
 target_link_libraries(timesource-headers INTERFACE PkgConfig::LIBSERIALPORT Threads::Threads)
+if(GR4TIMESOURCE_HAVE_TIMEPPS)
+  target_compile_definitions(timesource-headers INTERFACE TIMESOURCE_HAVE_TIMEPPS)
+endif()
+if(GR4TIMESOURCE_HAVE_TIMEX_TAI)
+  target_compile_definitions(timesource-headers INTERFACE TIMESOURCE_HAVE_TIMEX_TAI)
+endif()
 set_target_properties(timesource-headers PROPERTIES EXPORT_NAME headers)
 add_library(gr4-timesource::headers ALIAS timesource-headers)
 

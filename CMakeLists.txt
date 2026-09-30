@@ -239,6 +239,18 @@ if(GR4TIMESOURCE_TESTS)
   endif()
 endif()
 
+# ---- the examples ------------------------------------------------------------------------
+#
+# gps_status builds a GpsSource graph in code and prints the receiver's status once per second.
+# examples/gps_status.grc holds the same source as a graph file for rungraph. Neither is
+# installed.
+option(GR4TIMESOURCE_ENABLE_EXAMPLES "Build the example programs" ${PROJECT_IS_TOP_LEVEL})
+if(GR4TIMESOURCE_ENABLE_EXAMPLES)
+  add_executable(gps_status examples/gps_status.cpp)
+  target_link_libraries(gps_status PRIVATE timesource-headers gnuradio4::gnuradio-core gnuradio4::gnuradio-blocklib-core)
+  target_compile_options(gps_status PRIVATE ${GR4TIMESOURCE_WARNINGS})
+endif()
+
 # ---- install -----------------------------------------------------------------------------
 install(
   TARGETS gr4-timesource-blocks

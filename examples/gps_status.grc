@@ -1,0 +1,25 @@
+# Copyright 2026 Jeff Long
+# SPDX-License-Identifier: MIT
+#
+# A GPS receiver's seconds printed to the console, one tag map per second.
+# GpsSource detects the receiver where device_path is empty and reads it at
+# 4800 baud. Convert takes the uint8 samples to float32 for TagSink, which
+# prints each tag it receives with verbose_console set.
+blocks:
+  - id: timesource::GpsSource
+    parameters:
+      name: gps
+      device_path: !!str ""
+      baud_rate: !!str "Baud4800"
+  - id: gr::blocks::basic::Convert<uint8, float32>
+    parameters:
+      name: to_float
+  - id: gr::blocks::testing::TagSink<float32>
+    parameters:
+      name: console
+      log_samples: false
+      log_tags: false
+      verbose_console: true
+connections:
+  - [gps, out, to_float, in]
+  - [to_float, out, console, in]

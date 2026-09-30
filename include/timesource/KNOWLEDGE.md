@@ -1,12 +1,13 @@
 <!-- Copyright 2026 Jeff Long; SPDX-License-Identifier: MIT -->
-# timesource — the GPS and PPS timing sources
+# timesource — the GPS and PPS timing sources and the timing measurements
 
 **purpose**
 `timesource::GpsSource` turns a GPS receiver's NMEA 0183 output into one tagged sample per
 UTC second. `timesource::PpsSource` does the same for the seconds of a kernel clock or the
 assert edge of a PPS device. Both write `uint8` zeros; the tags carry the information. The
 settings and tag keys are those of the timing blocks the GNU Radio 4 blocks tree carried, so a
-graph moves over by its block names.
+graph moves over by its block names. `timesource::DiscontinuityMonitor` counts the gaps a
+stream's tags report and keeps a sample-to-time clock.
 
 **algorithm**
 `NmeaParser` keeps one open record per UTC second. GGA, RMC and ZDA carry a time and open
@@ -54,17 +55,39 @@ less than `ptp_offset_limit_ns`. Every clock read, sleep, PPS fetch and discipli
 through `ClockCalls`; `ClockSource::through()` builds a source on given calls with no device,
 and `PpsSource::_openClock` is the opener `start()` uses. The cases answer both.
 
+`DiscontinuityMonitor` copies each chunk and reads each tag once, by a cursor past the last tag
+counted. A `gr::Size_t` `n_dropped_samples` adds to a 64-bit total. A `discontinuity` string
+adds one event and one count per comma-separated cause name, `other` for a name outside the
+known six. A float `sample_rate` goes through the rate check. `detail::rationalRate()` turns a
+rate into a rational on a microhertz grid for `gr::timing::SampleClock`. The first accepted
+rate builds the clock at `anchor_index` and `anchor_ns`; a later different rate re-anchors it
+with `withRate()` at the tag's index; a restated rate changes nothing. A positive
+`nominal_rate` refuses a rate more than `rate_tolerance` of it away, and every rate that is not
+positive and finite. A refusal is counted and kept for `lastRefusedRate()`.
+
 **io**
 In: a serial port by path, or the best-ranked port libserialport lists; a kernel clock or
 `/dev/ptpN` or `/dev/ppsN`. Out: `out`, `uint8`, one tag per second. `device_name` shows the
-port in use.
+port in use. `DiscontinuityMonitor`: `in` and `out`, `float`, `complex<float>` or `uint8`.
 
 **guarantees**
 The GPS port is opened read-only and nothing is written to it. A `device_path` that does not
 open refuses the start with the reason; an empty one retries detection each second. A port that
 fails while running is reopened. A `PpsSource` mode the platform or device cannot give refuses
 the start and names why. Auto is the system clock and opens no device. A stop takes effect
-within one read wait or 100 ms of clock wait.
+within one read wait or 100 ms of clock wait. `DiscontinuityMonitor` passes its samples
+unchanged and, as a `gr::UnfilteredTagPropagation` block, every key of every tag at its index.
+It publishes its counts through one `MeasurementSlot` after each call that changes them;
+`account()` reads them all from one update, and the dropped total rides the slot's integer
+field. `clock()`, `hasClock()` and `lastRefusedRate()` are owning-thread state. A
+`nominal_rate` off the microhertz grid's range throws when the settings are applied.
+`GR4TIMESOURCE_TIMING_BLOCKS` decides each measurement block apart. `DiscontinuityMonitor`
+needs `algorithm/timing/SampleClock.hpp` of `gnuradio4Library`, which the willcode fork adds,
+and the core's `gr::UnfilteredTagPropagation`. AUTO builds the block where both are found, with
+its registration header `DiscontinuityMonitorBlocks.hpp` and its cases, and otherwise prints a
+line naming the block and the missing piece. ON fails the configure where the block lacks a
+piece, and OFF leaves it out. A failed check reruns at the next configure, and a passed one
+stays cached. The sources build either way.
 
 **invariants**
 Each block holds its `IoThread` as its last member, so the io thread ends before the port, the
@@ -87,6 +110,8 @@ discipline describes the system clock alone, and a PTP clock no daemon steers ru
 HwPps seconds are the system clock's at the pulse and follow its steps. NMEA 0183 names 4800
 bit/s, and `baud_rate` defaults to `Baud4800`, the zero value of `BaudRate`. A USB serial bridge
 runs at the rate the host sets; the receiver behind it decides which rate delivers sentences.
+The microhertz grid holds a 1 ppm trim exactly: 44100 Hz trimmed by 1 ppm is
+44100044100/1000000.
 
 **rejected**
 A serial layer of our own over sysfs, termios and the registry: libserialport covers opening,
@@ -111,4 +136,5 @@ platform the lookup can accept the path and the open refuse it.
 `SerialPort::open` refuses every path libserialport refuses and carries its message. A read that
 returns early with no bytes is taken as a hang-up. Enumerations used as settings must stay small:
 the reflection that names them covers small values only, so `BaudRate` counts from zero and
-`bitsPerSecond()` gives the rate.
+`bitsPerSecond()` gives the rate. `DiscontinuityMonitor` reads `n_dropped_samples` as
+`gr::Size_t` and `sample_rate` as `float` alone and skips a value of another type.

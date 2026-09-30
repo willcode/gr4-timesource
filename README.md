@@ -1,7 +1,8 @@
 <!-- Copyright 2026 Jeff Long; SPDX-License-Identifier: MIT -->
 # gr4-timesource
 
-GPS and PPS timing sources for GNU Radio 4, loaded as a block library.
+GPS and PPS timing sources for GNU Radio 4, and blocks that measure a
+stream's timing, loaded as a block library.
 
 Two blocks mark the seconds of a time reference with tags on a stream of
 `uint8` samples:
@@ -11,8 +12,13 @@ Two blocks mark the seconds of a time reference with tags on a stream of
 - `timesource::PpsSource` tags each second of a kernel clock (NTP, PTP, TAI)
   or of a pulse-per-second device, with the kernel's clock discipline.
 
+A measurement block reads the timing of a stream:
+
+- `timesource::DiscontinuityMonitor` counts the gaps a stream's tags report
+  and keeps a sample-to-time clock.
+
 The package installs `libgr4-timesource-blocks.so` into the plugin directory
-of GNU Radio 4, where a program that loads plugins finds both blocks by name.
+of GNU Radio 4, where a program that loads plugins finds the blocks by name.
 
 ## Moving a graph from the in-tree timing blocks
 
@@ -24,7 +30,11 @@ part of the GNU Radio 4 blocks tree. A graph moves over by its block names:
 | `gr::blocks::timing::GpsSource`    | `timesource::GpsSource`  |
 | `gr::blocks::timing::PpsSource`    | `timesource::PpsSource`  |
 
-These behaviors differ from the in-tree blocks:
+`gr::blocks::timing::DiscontinuityMonitor<T>` is
+`timesource::DiscontinuityMonitor<T>` here, with the same settings and
+readers.
+
+These behaviors of the two sources differ from the in-tree blocks:
 
 - `baud_rate` takes the names `Baud4800` to `Baud230400` and defaults to
   `Baud4800`, the rate NMEA 0183 names. A graph that reads a receiver at
@@ -169,9 +179,35 @@ The tag name is `trigger_name`, an underscore and the mode, as in `PPS_NTP`.
 An unlocked second's name ends in ` (unlocked)`. A fetch error from the PPS
 device is printed once; the block goes on waiting for pulses.
 
+## DiscontinuityMonitor
+
+The block copies `float`, `complex<float>` or `uint8` samples from its input
+to its output and forwards every key of every tag. It reads three tag keys.
+`n_dropped_samples` adds to a total of dropped samples. `discontinuity` holds
+a comma-separated list of causes: `sample_rate`, `signal_name`,
+`signal_quantity`, `signal_unit`, `signal_range` and `gap`. Each name counts
+once for its cause, an unknown name counts as `other`, and each such tag
+counts one event. The first rate starts the block's sample-to-time clock at
+`anchor_index` and `anchor_ns`, and a later new `sample_rate` re-anchors it
+at the tag's sample.
+
+| Setting          | Type   | Default | Meaning                           |
+| ---------------- | ------ | ------- | --------------------------------- |
+| `nominal_rate`   | double | 0       | expected rate in Hz; 0 takes any  |
+| `rate_tolerance` | double | 1e-6    | largest relative difference       |
+| `anchor_index`   | uint64 | 0       | sample index of `anchor_ns`       |
+| `anchor_ns`      | int64  | 0       | ns since the Unix epoch there     |
+
+A positive `nominal_rate` starts the clock at that rate. A stated rate that
+differs from it by more than `rate_tolerance` is refused and counted, and the
+clock keeps its rate. `nDroppedSamples()`, `nEvents()`, `nRateChanges()`,
+`nRateMismatches()` and `account()` may be called from any thread;
+`account()` returns every count from one update. `clock()`, `hasClock()` and
+`lastRefusedRate()` belong to the thread that runs the block.
+
 ## Tags
 
-Both blocks place one tag on the first sample of each second:
+The two sources place one tag on the first sample of each second:
 
 | Key                 | Type    | Content                                  |
 | ------------------- | ------- | ---------------------------------------- |
@@ -181,7 +217,7 @@ Both blocks place one tag on the first sample of each second:
 | `trigger_meta_info` | map     | the record below, when enabled           |
 | `context`           | string  | the `context` setting, when set          |
 
-`trigger_time` is the UTC second in every mode of both blocks. A PTP clock
+`trigger_time` is the UTC second in every mode of both sources. A PTP clock
 on TAI is moved to UTC as the PpsSource section states.
 
 `GpsSource` record: `geolocation` (a GeoJSON point: `type` "Point" and
@@ -246,6 +282,13 @@ what else is built:
 
 "top level" is ON where the package is the top-level CMake project.
 
+`GR4TIMESOURCE_TIMING_BLOCKS` takes `AUTO`, the default, `ON` or `OFF`, and
+decides for each measurement block and its cases whether it is built.
+`DiscontinuityMonitor` needs `algorithm/timing/SampleClock.hpp` of
+`gnuradio4Library`, which only the willcode fork carries, and the core's
+`gr::UnfilteredTagPropagation`: `AUTO` builds the block where the configure
+finds both, `ON` fails the configure without them, and `OFF` leaves it out.
+
 ## Tests
 
 The cases need Boost.UT, one header, `boost/ut.hpp`. The configure looks
@@ -254,6 +297,9 @@ system's include directories. Add the prefix Boost.UT is installed under
 to `CMAKE_PREFIX_PATH`, or set the cache variable
 `GR4TIMESOURCE_UT_INCLUDE_DIR` to the directory holding `boost/ut.hpp`.
 Without either, the configure prints a status line and builds no case.
+The measurement cases also need the GNU Radio 4 blocks package
+(`gnuradio4Blocks`) under `CMAKE_PREFIX_PATH`. Without it the configure
+prints a status line and builds none of them.
 
 ```
 cmake -S . -B build -G Ninja \

@@ -67,8 +67,93 @@ int main() {
 ]]
   GR4TIMESOURCE_HAVE_TIMEX_TAI)
 
-# The headers of the package: the NMEA parser, and the serial port and clock layers the blocks
-# stand on. Installed under include/gr4-timesource/.
+# DiscontinuityMonitor needs gnuradio-4.0/algorithm/timing/SampleClock.hpp from gnuradio4Library
+# and gr::UnfilteredTagPropagation from the core. Upstream main carries the tag policy, and the
+# willcode fork of the library adds SampleClock.hpp.
+# GR4TIMESOURCE_TIMING_BLOCKS takes AUTO, ON or OFF. AUTO builds each block whose pieces are
+# found and prints one line for each block it leaves out. ON fails the configure where a block
+# lacks a piece. OFF builds no measurement block. Each check is a try_compile against the found targets
+# through check_cxx_source_compiles(): __has_include() for a header, a use of the name for the
+# tag policy. A failed result leaves the cache before its check runs again, and a reconfigure
+# sees a piece the prefix gained since. A passed result stays cached.
+set(GR4TIMESOURCE_TIMING_BLOCKS
+    AUTO
+    CACHE STRING "Build the measurement blocks where their pieces are found: AUTO, ON or OFF")
+set_property(CACHE GR4TIMESOURCE_TIMING_BLOCKS PROPERTY STRINGS AUTO ON OFF)
+if(NOT GR4TIMESOURCE_TIMING_BLOCKS MATCHES "^(ON|OFF|AUTO)$")
+  message(FATAL_ERROR "gr4-timesource: GR4TIMESOURCE_TIMING_BLOCKS is '${GR4TIMESOURCE_TIMING_BLOCKS}'; "
+                      "it takes AUTO, ON or OFF")
+endif()
+
+# timesource_probe(<result> <source> <libraries>): the check, rerun while its cached result is a failure.
+macro(timesource_probe result source libraries)
+  if(NOT ${result})
+    unset(${result} CACHE)
+  endif()
+  set(CMAKE_REQUIRED_LIBRARIES ${libraries})
+  set(CMAKE_REQUIRED_QUIET ON)
+  check_cxx_source_compiles("${source}" ${result})
+  unset(CMAKE_REQUIRED_LIBRARIES)
+  unset(CMAKE_REQUIRED_QUIET)
+endmacro()
+
+# timesource_timing_block(<block> <out> <piece>...): <out> is TRUE where the found GNU Radio 4
+# holds every piece, a header under include/ or gr::UnfilteredTagPropagation. Otherwise AUTO
+# prints the block and its missing pieces with their origin, and ON stops the configure with the
+# same text.
+function(timesource_timing_block block out)
+  set(missing "")
+  foreach(piece ${ARGN})
+    string(MAKE_C_IDENTIFIER "${piece}" id)
+    if(piece STREQUAL "gr::UnfilteredTagPropagation")
+      timesource_probe(GR4TIMESOURCE_HAS_${id} "#include <gnuradio-4.0/Block.hpp>\nusing Policy = gr::UnfilteredTagPropagation;\nint main() { return 0; }"
+                       gnuradio4::gnuradio-core)
+    elseif(TARGET gnuradio4::gnuradio-algorithm)
+      timesource_probe(GR4TIMESOURCE_HAS_${id} "#if !__has_include(<${piece}>)\n#error absent\n#endif\nint main() { return 0; }"
+                       gnuradio4::gnuradio-algorithm)
+    else()
+      set(GR4TIMESOURCE_HAS_${id} FALSE)
+    endif()
+    if(NOT GR4TIMESOURCE_HAS_${id})
+      list(APPEND missing "${piece}")
+    endif()
+  endforeach()
+  if(NOT missing)
+    set(${out} TRUE PARENT_SCOPE)
+    message(STATUS "gr4-timesource: ${block} is built")
+    return()
+  endif()
+  set(${out} FALSE PARENT_SCOPE)
+  list(JOIN missing ", " lacking)
+  set(origins "")
+  if(NOT TARGET gnuradio4::gnuradio-algorithm AND NOT missing STREQUAL "gr::UnfilteredTagPropagation")
+    string(APPEND origins " No gnuradio4Library package was found.")
+  endif()
+  if("gnuradio-4.0/algorithm/timing/SampleClock.hpp" IN_LIST missing)
+    string(APPEND origins " gnuradio-4.0/algorithm/timing/SampleClock.hpp comes from the willcode fork of the GNU "
+                          "Radio 4 library, and upstream main lacks it.")
+  endif()
+  if("gr::UnfilteredTagPropagation" IN_LIST missing)
+    string(APPEND origins " gr::UnfilteredTagPropagation comes from the GNU Radio 4 core, upstream main included.")
+  endif()
+  if(GR4TIMESOURCE_TIMING_BLOCKS STREQUAL "ON")
+    message(FATAL_ERROR "gr4-timesource: GR4TIMESOURCE_TIMING_BLOCKS is ON, and ${block} needs ${lacking}, which "
+                        "the found GNU Radio 4 lacks.${origins} Set GR4TIMESOURCE_TIMING_BLOCKS to AUTO to build "
+                        "the blocks whose pieces are found, or to OFF.")
+  endif()
+  message(STATUS "gr4-timesource: ${block} is SKIPPED: the found GNU Radio 4 lacks ${lacking}.${origins} "
+                 "The rest of the package builds without ${block}.")
+endfunction()
+
+set(GR4TIMESOURCE_DISCONTINUITY FALSE)
+if(NOT GR4TIMESOURCE_TIMING_BLOCKS STREQUAL "OFF")
+  find_package(gnuradio4Library CONFIG QUIET)
+  timesource_timing_block(DiscontinuityMonitor GR4TIMESOURCE_DISCONTINUITY
+                          gnuradio-4.0/algorithm/timing/SampleClock.hpp gr::UnfilteredTagPropagation)
+endif()
+
+# The headers of the package: the blocks, the NMEA parser, and the serial port and clock layers
+# the sources stand on. Installed under include/gr4-timesource/.
 set(GR4TIMESOURCE_INSTALL_INCLUDEDIR ${CMAKE_INSTALL_INCLUDEDIR}/gr4-timesource)
 add_library(timesource-headers INTERFACE)
 target_include_directories(
@@ -76,6 +161,9 @@ target_include_directories(
                                $<INSTALL_INTERFACE:${GR4TIMESOURCE_INSTALL_INCLUDEDIR}>)
 target_compile_features(timesource-headers INTERFACE cxx_std_23)
 target_link_libraries(timesource-headers INTERFACE PkgConfig::LIBSERIALPORT Threads::Threads)
+if(GR4TIMESOURCE_DISCONTINUITY)
+  target_link_libraries(timesource-headers INTERFACE gnuradio4::gnuradio-algorithm)
+endif()
 if(GR4TIMESOURCE_HAVE_TIMEPPS)
   target_compile_definitions(timesource-headers INTERFACE TIMESOURCE_HAVE_TIMEPPS)
 endif()
@@ -87,13 +175,32 @@ add_library(gr4-timesource::headers ALIAS timesource-headers)
 
 # ---- the block library -------------------------------------------------------------------
 #
-# include/gnuradio-4.0/timesource/TimesourceBlocks.hpp registers each block under its type name.
-# gr_add_block_library() generates the registration units from it into an object library, and
+# include/gnuradio-4.0/timesource/TimesourceBlocks.hpp registers each source under its type name.
+# DiscontinuityMonitorBlocks.hpp beside it registers DiscontinuityMonitor, and the build reads it
+# where the block is built. gr_add_block_library()
+# generates the registration units into an object library, and
 # the shared library built from those objects goes to lib/gnuradio-4/plugins, in the build tree
 # and under the install prefix. A program that loads plugins from there creates the blocks by
-# name.
-gr_add_block_library(GrTimesourceBlocks HEADERS include/gnuradio-4.0/timesource/TimesourceBlocks.hpp
-                     LINK_LIBRARIES timesource-headers)
+# name. A block-library macro that audits the registering headers under include/
+# (GR_BLOCKLIB_REQUIRE_REGISTERED_HEADERS) takes the header of a block left out as unregistered
+# on purpose.
+set(GR4TIMESOURCE_REGISTERED include/gnuradio-4.0/timesource/TimesourceBlocks.hpp)
+set(GR4TIMESOURCE_UNREGISTERED "")
+foreach(block DISCONTINUITY:DiscontinuityMonitor)
+  string(REPLACE ":" ";" pair "${block}")
+  list(GET pair 0 flag)
+  list(GET pair 1 name)
+  if(GR4TIMESOURCE_${flag})
+    list(APPEND GR4TIMESOURCE_REGISTERED include/gnuradio-4.0/timesource/${name}Blocks.hpp)
+  else()
+    list(APPEND GR4TIMESOURCE_UNREGISTERED include/gnuradio-4.0/timesource/${name}Blocks.hpp)
+  endif()
+endforeach()
+set(GR4TIMESOURCE_REGISTRATION HEADERS ${GR4TIMESOURCE_REGISTERED})
+if(GR4TIMESOURCE_UNREGISTERED AND DEFINED GR_BLOCKLIB_REQUIRE_REGISTERED_HEADERS)
+  list(APPEND GR4TIMESOURCE_REGISTRATION UNREGISTERED_HEADERS ${GR4TIMESOURCE_UNREGISTERED})
+endif()
+gr_add_block_library(GrTimesourceBlocks ${GR4TIMESOURCE_REGISTRATION} LINK_LIBRARIES timesource-headers)
 if(NOT TARGET GrTimesourceBlocksObject)
   message(FATAL_ERROR "gr4-timesource: the block registration was not generated")
 endif()
@@ -206,6 +313,26 @@ if(GR4TIMESOURCE_TESTS)
           pps.samples-per-second-follow-the-mode
     LIBS gnuradio4::gnuradio-core gnuradio4::gnuradio-blocklib-core)
 
+  # The measurement cases drive their block through the test blocks of the GNU Radio 4 blocks
+  # package, found as gnuradio4Blocks.
+  if(GR4TIMESOURCE_DISCONTINUITY)
+    find_package(gnuradio4Blocks CONFIG QUIET)
+  endif()
+  if(GR4TIMESOURCE_DISCONTINUITY AND TARGET gnuradio4::gr-testing)
+    timesource_test(
+      qa_DiscontinuityMonitor
+      CASES discontinuity.totals-dropped-samples-and-counts-every-cause
+            discontinuity.a-rate-change-re-anchors-and-both-epochs-convert-exactly
+            discontinuity.refuses-counts-and-names-a-rate-outside-the-tolerance
+            discontinuity.the-account-is-independent-of-the-chunking
+            discontinuity.every-type-passes-its-samples-through
+            discontinuity.forwards-a-key-the-default-filter-drops
+      LIBS gnuradio4::gnuradio-core gnuradio4::gnuradio-blocklib-core gnuradio4::gr-testing)
+  elseif(GR4TIMESOURCE_DISCONTINUITY)
+    message(STATUS "gr4-timesource: the DiscontinuityMonitor cases are SKIPPED: no gnuradio4Blocks under "
+                   "CMAKE_PREFIX_PATH")
+  endif()
+
   timesource_test(
     qa_NmeaParser
     CASES nmea.checksum-of-a-known-sentence
@@ -257,15 +384,23 @@ install(
   EXPORT gr4-timesourceTargets
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/gnuradio-4/plugins)
 install(TARGETS timesource-headers EXPORT gr4-timesourceTargets)
+set(GR4TIMESOURCE_HEADER_EXCLUDES "")
+if(NOT GR4TIMESOURCE_DISCONTINUITY)
+  list(APPEND GR4TIMESOURCE_HEADER_EXCLUDES PATTERN "DiscontinuityMonitor.hpp" EXCLUDE)
+endif()
 install(
   DIRECTORY include/timesource
   DESTINATION ${GR4TIMESOURCE_INSTALL_INCLUDEDIR}
   FILES_MATCHING
-  PATTERN "*.hpp")
+  PATTERN "*.hpp" ${GR4TIMESOURCE_HEADER_EXCLUDES})
 install(
   EXPORT gr4-timesourceTargets
   NAMESPACE gr4-timesource::
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/gr4-timesource)
+set(GR4TIMESOURCE_CONFIG_LIBRARY "")
+if(GR4TIMESOURCE_DISCONTINUITY)
+  set(GR4TIMESOURCE_CONFIG_LIBRARY "find_dependency(gnuradio4Library CONFIG)")
+endif()
 file(
   CONFIGURE
   OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/gr4-timesourceConfig.cmake
@@ -274,6 +409,7 @@ file(
 include(CMakeFindDependencyMacro)
 find_dependency(Threads)
 find_dependency(gnuradio4 CONFIG)
+@GR4TIMESOURCE_CONFIG_LIBRARY@
 find_dependency(PkgConfig)
 pkg_check_modules(LIBSERIALPORT QUIET IMPORTED_TARGET libserialport)
 if(NOT LIBSERIALPORT_FOUND)
